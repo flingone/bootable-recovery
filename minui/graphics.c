@@ -59,7 +59,7 @@ static GGLSurface gr_font_texture;
 static GGLSurface gr_framebuffer[NUM_BUFFERS];
 static GGLSurface gr_mem_surface;
 static unsigned gr_active_fb = 0;
-static unsigned double_buffering = 0;
+static unsigned double_buffering = 1;
 
 static int gr_fb_fd = -1;
 static int gr_vt_fd = -1;
@@ -84,6 +84,7 @@ static int get_framebuffer(GGLSurface *fb)
         return -1;
     }
 
+#if defined(TARGET_RK29)
     vi.bits_per_pixel = PIXEL_SIZE * 8;
     if (PIXEL_FORMAT == GGL_PIXEL_FORMAT_BGRA_8888) {
       vi.red.offset     = 8;
@@ -155,7 +156,105 @@ static int get_framebuffer(GGLSurface *fb)
     fb->data = (void*) (((unsigned) bits) + vi.yres * fi.line_length);
     fb->format = PIXEL_FORMAT;
     memset(fb->data, 0, vi.yres * fi.line_length);
+#else
+    if (ioctl(fd, FBIOGET_FSCREENINFO, &fi) < 0) {
+        perror("failed to get fb0 info");
+        close(fd);
+        return -1;
+    }
 
+    unsigned char data_format= vi.nonstd&0xff;
+    switch (data_format)
+    {
+	 case GGL_PIXEL_FORMAT_RGBX_8888:      // rgb
+	 case GGL_PIXEL_FORMAT_RGBA_8888:
+	 case GGL_PIXEL_FORMAT_BGRA_8888:
+		fi.line_length=fi.line_length/2;
+	 break;
+	 case GGL_PIXEL_FORMAT_RGB_565:  //RGB565
+	 break;
+	 default:
+		printf("un supported format %d\n", data_format);
+		close(fd);
+		return -1;
+	 break;
+   }
+
+    vi.bits_per_pixel = PIXEL_SIZE * 8;
+    if (PIXEL_FORMAT == GGL_PIXEL_FORMAT_BGRA_8888) {
+      vi.red.offset     = 16;
+      vi.red.length     = 8;
+      vi.green.offset   = 7;
+      vi.green.length   = 8;
+      vi.blue.offset    = 0;
+      vi.blue.length    = 8;
+      vi.transp.offset  = 0;
+      vi.transp.length  = 0;
+    } else if (PIXEL_FORMAT == GGL_PIXEL_FORMAT_RGBA_8888) {
+      vi.red.offset     = 8;
+      vi.red.length     = 8;
+      vi.green.offset   = 16;
+      vi.green.length   = 8;
+      vi.blue.offset    = 24;
+      vi.blue.length    = 8;
+      vi.transp.offset  = 0;
+      vi.transp.length  = 8;
+    } else if (PIXEL_FORMAT == GGL_PIXEL_FORMAT_RGBX_8888) {
+      vi.red.offset     = 24;
+      vi.red.length     = 8;
+      vi.green.offset   = 16;
+      vi.green.length   = 8;
+      vi.blue.offset    = 8;
+      vi.blue.length    = 8;
+      vi.transp.offset  = 0;
+      vi.transp.length  = 8;
+    } else { /* RGB565*/
+      vi.red.offset     = 11;
+      vi.red.length     = 5;
+      vi.green.offset   = 5;
+      vi.green.length   = 6;
+      vi.blue.offset    = 0;
+      vi.blue.length    = 5;
+      vi.transp.offset  = 0;
+      vi.transp.length  = 0;
+      vi.grayscale	    &= 0xff;
+      vi.grayscale	    |= (vi.xres<<8) + (vi.yres<<20);
+      vi.nonstd &= 0xffffff00;
+      vi.nonstd |= GGL_PIXEL_FORMAT_RGB_565;
+    }
+
+
+    bits = mmap(0, fi.smem_len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (bits == MAP_FAILED) {
+        perror("failed to mmap framebuffer");
+        close(fd);
+        return -1;
+    }
+
+    fb->version = sizeof(*fb);
+    fb->width = vi.xres;
+    fb->height = vi.yres;
+    fb->stride = fi.line_length/PIXEL_SIZE;
+    fb->data = bits;
+    fb->format = PIXEL_FORMAT;
+    memset(fb->data, 0, vi.yres * fi.line_length);
+
+    fb++;
+
+    fb->version = sizeof(*fb);
+    fb->width = vi.xres;
+    fb->height = vi.yres;
+    fb->stride = fi.line_length/PIXEL_SIZE;
+    fb->data = (void*) (((unsigned) bits) + vi.yres * fi.line_length);
+    fb->format = PIXEL_FORMAT;
+    memset(fb->data, 0, vi.yres * fi.line_length);
+
+    if (ioctl(fd, FBIOPUT_VSCREENINFO, &vi) < 0) {
+        perror("failed to put fb0 info");
+        close(fd);
+        return -1;
+    }
+#endif
     return fd;
 }
 
@@ -176,6 +275,10 @@ static void set_active_framebuffer(unsigned n)
     vi.bits_per_pixel = PIXEL_SIZE * 8;
     if (ioctl(gr_fb_fd, FBIOPUT_VSCREENINFO, &vi) < 0) {
         perror("active fb swap failed");
+    }
+
+    if (ioctl(gr_fb_fd,RK_FBIOSET_CONFIG_DONE, NULL) < 0) {
+        perror("set config done failed");
     }
 }
 

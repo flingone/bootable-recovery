@@ -27,6 +27,8 @@
 #include "roots.h"
 #include "common.h"
 #include "make_ext4fs.h"
+#include "mtdutils/rk29.h"
+#include "cutils/properties.h"
 
 static int num_volumes = 0;
 static Volume* device_volumes = NULL;
@@ -177,7 +179,7 @@ int ensure_path_mounted(const char* path) {
         }
         return mtd_mount_partition(partition, v->mount_point, v->fs_type, 0);
     } else if (strcmp(v->fs_type, "ext4") == 0 ||
-               strcmp(v->fs_type, "vfat") == 0) {
+               strcmp(v->fs_type, "ext3") == 0) {
         result = mount(v->device, v->mount_point, v->fs_type,
                        MS_NOATIME | MS_NODEV | MS_NODIRATIME, "");
         if (result == 0) return 0;
@@ -187,6 +189,21 @@ int ensure_path_mounted(const char* path) {
                  v->device, strerror(errno), v->device2);
             result = mount(v->device2, v->mount_point, v->fs_type,
                            MS_NOATIME | MS_NODEV | MS_NODIRATIME, "");
+            if (result == 0) return 0;
+        }
+
+        LOGE("failed to mount %s (%s)\n", v->mount_point, strerror(errno));
+        return -1;
+    } else if (strcmp(v->fs_type, "vfat") == 0) {
+        result = mount(v->device, v->mount_point, v->fs_type,
+                       MS_NOATIME | MS_NODEV | MS_NODIRATIME, "shortname=mixed,utf8");
+        if (result == 0) return 0;
+
+        if (v->device2) {
+            LOGW("failed to mount %s (%s); trying %s\n",
+                 v->device, strerror(errno), v->device2);
+            result = mount(v->device2, v->mount_point, v->fs_type,
+                           MS_NOATIME | MS_NODEV | MS_NODIRATIME, "shortname=mixed,utf8");
             if (result == 0) return 0;
         }
 
@@ -271,11 +288,33 @@ int format_volume(const char* volume) {
     }
 
     if (strcmp(v->fs_type, "ext4") == 0) {
-        int result = make_ext4fs(v->device, v->length, volume, sehandle);
+        int result = rk_make_ext4fs(v->device, v->length, volume);
         if (result != 0) {
             LOGE("format_volume: make_extf4fs failed on %s\n", v->device);
             return -1;
         }
+        return 0;
+    }
+
+#if TARGET_BOARD_PLATFORM == rockchip
+    if (strcmp(v->fs_type, "ext3") == 0) {
+        int result = rk_make_ext3fs(v->device);
+        if (result != 0) {
+            LOGE("format_volume: make_extf3fs failed on %s\n", v->device);
+            return -1;
+          }
+        return 0;
+     }
+#endif
+    if (strcmp(v->fs_type, "vfat") == 0) {
+        char volume_label[16] = "\0";
+        property_get("UserVolumeLabel", volume_label, "");
+        LOGI("VolumeLabel: %s\n", volume_label);
+        int result = make_vfat(v->device,volume_label);
+        if (result != 0) {
+            LOGE("format_volume: make_vfat failed on %s\n", v->device);
+            return -1;
+         }
         return 0;
     }
 

@@ -43,6 +43,7 @@
 #include "adb_install.h"
 extern "C" {
 #include "minadbd/adb.h"
+#include "mtdutils/mtdutils.h"
 }
 
 struct selabel_handle *sehandle;
@@ -53,6 +54,7 @@ static const struct option OPTIONS[] = {
   { "wipe_data", no_argument, NULL, 'w' },
   { "wipe_cache", no_argument, NULL, 'c' },
   { "show_text", no_argument, NULL, 't' },
+  { "wipe_all", no_argument, NULL, 'w'+'a' },
   { "just_exit", no_argument, NULL, 'x' },
   { "locale", required_argument, NULL, 'l' },
   { NULL, 0, NULL, 0 },
@@ -69,6 +71,8 @@ static const char *SDCARD_ROOT = "/sdcard";
 static const char *TEMPORARY_LOG_FILE = "/tmp/recovery.log";
 static const char *TEMPORARY_INSTALL_FILE = "/tmp/last_install";
 static const char *SIDELOAD_TEMP_DIR = "/tmp/sideload";
+static char IN_SDCARD_ROOT[64] = "\0";
+static char EX_SDCARD_ROOT[64] = "\0";
 
 RecoveryUI* ui = NULL;
 char* locale = NULL;
@@ -311,6 +315,169 @@ finish_recovery(const char *send_intent) {
 
     ensure_path_unmounted(CACHE_ROOT);
     sync();  // For good measure.
+}
+
+static int set_fat32_volumename(const char *volume,const char *name)
+{
+	int iRet=0,fd=0,nRead,i,j;
+	bool bVolumeEntry = false;
+	char mtdName[32],path[100],buf[512],volumeName[11];
+	unsigned char nSecPerCluster,nFatNum;
+	unsigned short nReservedSec;
+	unsigned int nTotalSec,nSecPerFat,nRootCluster,clusterStartLba,clusterNo,currentSec;
+	char *p;
+	Volume *pVol=NULL;
+	MtdPartition *partition = NULL;
+	LOGI("set_fat32_volumename in,volume=%s,name=%s\n",volume,name);
+	if (ensure_path_unmounted(volume) != 0)
+	{
+		LOGE("Can't unmount %s!\n", volume);
+		iRet = -1;
+		goto Exit_set_fat32_volumename;
+	}
+
+	pVol = volume_for_path(volume);
+	if(!pVol)
+	{
+		LOGE("Get %s failed!\n", volume);
+		iRet = -2;
+		goto Exit_set_fat32_volumename;
+	}
+
+	if(p = strstr(pVol->device,"/dev/block/mtd/by-name/"))
+	   strcpy(mtdName,p+23);
+	else
+	   strcpy(mtdName,pVol->device);
+
+	partition = (MtdPartition *)mtd_find_partition_by_name(mtdName);
+	if (!partition)
+	{
+		LOGE("failed to find \"%s\" partition to mount at \"%s\"\n", mtdName, pVol->mount_point);
+		iRet = -3;
+		goto Exit_set_fat32_volumename;
+	}
+
+	sprintf(path, "/dev/mtd/mtd%d",mtd_get_partition_index(partition));
+
+	fd = open(path, O_RDWR);
+	if (fd < 0)
+	{
+		LOGE("Can't open %s\n", path);
+		iRet = -4;
+		goto Exit_set_fat32_volumename;
+	}
+	//1.check fat32 dbr
+	nRead = read(fd,buf,512);
+	if (nRead!=512)
+	{
+		LOGE("Read fat32 dbr failed!\n");
+		iRet = -5;
+		goto Exit_set_fat32_volumename;
+	}
+	if (strncmp(buf+0x52,"FAT32",5)!=0)
+	{
+		LOGE("check system id in dbr failed,id = %s!\n",buf+0x52);
+		iRet = -6;
+		goto Exit_set_fat32_volumename;
+	}
+	if ((buf[0x1FE]!=0x55)||(buf[0x1FF]!=0xAA))
+	{
+		LOGE("check end flag in dbr failed!\n");
+		iRet = -7;
+		goto Exit_set_fat32_volumename;
+	}
+	//2.get data from dbr
+	nSecPerCluster = buf[0xD];
+	nReservedSec = *(unsigned short *)(buf + 0xE);
+	nFatNum = buf[0x10];
+	nTotalSec = *(unsigned int *)(buf + 0x20);
+	nSecPerFat = *(unsigned int *)(buf + 0x24);
+	nRootCluster = *(unsigned int *)(buf + 0x2C);
+
+	clusterStartLba = nReservedSec + nFatNum*nSecPerFat ;
+	clusterNo = nRootCluster;
+	//3.find volume entry
+	j = strlen(name);
+	if (j<=0)
+	{
+		LOGE("Volume name is empty!\n");
+		iRet = -8;
+		goto Exit_set_fat32_volumename;
+	}
+	if (j>11) j=11;
+	memset(volumeName,0x20,11);
+	for (i=0;i<j;i++)
+		volumeName[i] = toupper(name[i]);
+	while (clusterNo!=0)
+	{
+		currentSec = (clusterNo-2)*nSecPerCluster + clusterStartLba;
+		lseek(fd,currentSec*512,SEEK_SET);
+		for (i=0;i<nSecPerCluster;i++)
+		{
+			nRead = read(fd,buf,512);
+			if (nRead!=512)
+			{
+				LOGE("Read sector in find volume entry failed!\n");
+				iRet = -9;
+				goto Exit_set_fat32_volumename;
+			}
+			for (j=0;j<16;j++)
+			{
+				p = buf + j*32;
+				if (*p==0)
+				{//empty entry
+					memset(p,0,32);
+					memcpy(p,volumeName,11);
+					p[11] = 8;
+					lseek(fd,-512,SEEK_CUR);
+					write(fd,buf,512);
+					bVolumeEntry = true;
+					break;
+				}
+				else
+				{
+					if ((*(p+0xB))&0x8)
+					{//volume entry
+						memset(p,0,32);
+						memcpy(p,volumeName,11);
+						p[11] = 8;
+						lseek(fd,-512,SEEK_CUR);
+						write(fd,buf,512);
+						bVolumeEntry = true;
+						break;
+					}
+				}
+			}
+			if(bVolumeEntry)
+				break;
+		}
+		if(bVolumeEntry)
+			break;
+		//next cluster
+		currentSec = (clusterNo * 4)/512 + nReservedSec;
+		lseek(fd,currentSec*512,SEEK_SET);
+		nRead = read(fd,buf,512);
+		if (nRead!=512)
+		{
+			LOGE("Read sector in find next cluster failed!\n");
+			iRet = -10;
+			goto Exit_set_fat32_volumename;
+		}
+		clusterNo = *(unsigned int *)(buf+(clusterNo*4 % 512));
+		if (clusterNo==0xFFFFFFF) clusterNo = 0;
+	}
+	if (!bVolumeEntry)
+	{
+		LOGE("Find volume entry failed!\n");
+		iRet = -11;
+		goto Exit_set_fat32_volumename;
+	}
+
+Exit_set_fat32_volumename:
+	if (fd>0)
+		close(fd);
+	LOGI("set_fat32_volumename out\n");
+	return iRet;
 }
 
 static int
@@ -783,6 +950,16 @@ print_property(const char *key, const char *name, void *cookie) {
     printf("%s=%s\n", key, name);
 }
 
+void SetSdcardRootPath(void)
+{
+    property_get("InternalSD_ROOT", IN_SDCARD_ROOT, "");
+    LOGI("InternalSD_ROOT: %s\n", IN_SDCARD_ROOT);	
+    property_get("ExternalSD_ROOT", EX_SDCARD_ROOT, "");
+    LOGI("ExternalSD_ROOT: %s\n", EX_SDCARD_ROOT);	
+
+    return;
+}
+
 static void
 load_locale_from_cache() {
     FILE* fp = fopen_path(LOCALE_FILE, "r");
@@ -802,6 +979,15 @@ load_locale_from_cache() {
     }
 }
 
+void SureCacheMount() {
+    if(ensure_path_mounted("/cache")) {
+        printf("mount cache fail,so formate...\n");
+        tmplog_offset = 0;
+        format_volume("/cache");
+        ensure_path_mounted("/cache");
+    }
+}
+
 int
 main(int argc, char **argv) {
     time_t start = time(NULL);
@@ -809,6 +995,14 @@ main(int argc, char **argv) {
     // If these fail, there's not really anywhere to complain...
     freopen(TEMPORARY_LOG_FILE, "a", stdout); setbuf(stdout, NULL);
     freopen(TEMPORARY_LOG_FILE, "a", stderr); setbuf(stderr, NULL);
+
+#ifdef TARGET_RK30
+    freopen("/dev/ttyFIQ0", "a", stdout); setbuf(stdout, NULL);
+    freopen("/dev/ttyFIQ0", "a", stderr); setbuf(stderr, NULL);
+#else
+    freopen("/dev/ttyS1", "a", stdout); setbuf(stdout, NULL);
+    freopen("/dev/ttyS1", "a", stderr); setbuf(stderr, NULL);
+#endif
 
     // If this binary is started with the single argument "--adbd",
     // instead of being the normal recovery binary, it turns into kind
@@ -825,12 +1019,14 @@ main(int argc, char **argv) {
     printf("Starting recovery on %s", ctime(&start));
 
     load_volume_table();
+    SetSdcardRootPath();
+
     get_args(&argc, &argv);
 
     int previous_runs = 0;
     const char *send_intent = NULL;
     const char *update_package = NULL;
-    int wipe_data = 0, wipe_cache = 0, show_text = 0;
+    int wipe_data = 0, wipe_cache = 0, show_text = 0, wipe_all = 0;
     bool just_exit = false;
 
     int arg;
@@ -842,6 +1038,7 @@ main(int argc, char **argv) {
         case 'w': wipe_data = wipe_cache = 1; break;
         case 'c': wipe_cache = 1; break;
         case 't': show_text = 1; break;
+        case 'w'+'a':{ wipe_all = wipe_data = wipe_cache = 1;show_text = 1;} break;
         case 'x': just_exit = true; break;
         case 'l': locale = optarg; break;
         case '?':
@@ -860,7 +1057,9 @@ main(int argc, char **argv) {
 
     ui->Init();
     ui->SetLocale(locale);
-    ui->SetBackground(RecoveryUI::NONE);
+    //ui->SetBackground(RecoveryUI::NONE);
+    ui->Print("Recovery system v4.2.51 \n\n");
+    printf("Recovery system v4.2.51 \n");
     if (show_text) ui->ShowText(true);
 
 #ifdef HAVE_SELINUX
@@ -877,6 +1076,7 @@ main(int argc, char **argv) {
 #endif
 
     device->StartRecovery();
+    SureCacheMount();
 
     printf("Command:");
     for (arg = 0; arg < argc; arg++) {
@@ -917,7 +1117,11 @@ main(int argc, char **argv) {
         if (device->WipeData()) status = INSTALL_ERROR;
         if (erase_volume("/data")) status = INSTALL_ERROR;
         if (wipe_cache && erase_volume("/cache")) status = INSTALL_ERROR;
+        if (wipe_all && erase_volume(IN_SDCARD_ROOT)) status = INSTALL_ERROR;
         if (status != INSTALL_SUCCESS) ui->Print("Data wipe failed.\n");
+        char volume_label[16] = "\0";
+        property_get("UserVolumeLabel", volume_label, "");
+        set_fat32_volumename(IN_SDCARD_ROOT, volume_label);
     } else if (wipe_cache) {
         if (wipe_cache && erase_volume("/cache")) status = INSTALL_ERROR;
         if (status != INSTALL_SUCCESS) ui->Print("Cache wipe failed.\n");
@@ -929,7 +1133,7 @@ main(int argc, char **argv) {
     if (status == INSTALL_ERROR || status == INSTALL_CORRUPT) {
         ui->SetBackground(RecoveryUI::ERROR);
     }
-    if (status != INSTALL_SUCCESS || ui->IsTextVisible()) {
+    if (status != INSTALL_SUCCESS) {
         prompt_and_wait(device, status);
     }
 

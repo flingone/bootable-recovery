@@ -56,6 +56,13 @@ ifeq ($(TARGET_USERIMAGES_USE_EXT4), true)
     LOCAL_STATIC_LIBRARIES += libext4_utils_static libz
 endif
 
+ifeq ($(strip $(TARGET_BOARD_HARDWARE)),rk30board)
+LOCAL_CFLAGS += -DTARGET_RK30
+endif
+ifeq ($(strip $(TARGET_BOARD_HARDWARE)),rk2928board)
+LOCAL_CFLAGS += -DTARGET_RK30
+endif
+
 ifeq ($(HAVE_SELINUX), true)
   LOCAL_C_INCLUDES += external/libselinux/include
   LOCAL_STATIC_LIBRARIES += libselinux
@@ -73,6 +80,10 @@ ifeq ($(TARGET_RECOVERY_UI_LIB),)
 else
   LOCAL_STATIC_LIBRARIES += $(TARGET_RECOVERY_UI_LIB)
 endif
+
+# TARGET_BOARD_PLATFORM is change from rockchip to rk29xx or rk30xx
+# so force TARGET_BOARD_PLATFORM to be rockchip in recovery cpp file
+LOCAL_CFLAGS += -DTARGET_BOARD_PLATFORM=rockchip
 
 ifeq ($(HAVE_SELINUX),true)
   LOCAL_C_INCLUDES += external/libselinux/include
