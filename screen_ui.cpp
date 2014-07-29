@@ -78,8 +78,12 @@ ScreenRecoveryUI::ScreenRecoveryUI() :
     animation_fps(20),
     indeterminate_frames(6),
     installing_frames(7),
-    install_overlay_offset_x(13),
-    install_overlay_offset_y(190),
+
+    //install_overlay_offset_x(13),
+    //install_overlay_offset_y(190),
+    install_overlay_offset_x(51),
+    install_overlay_offset_y(55),
+
     overlay_offset_x(-1),
     overlay_offset_y(-1) {
     pthread_mutex_init(&updateMutex, NULL);
@@ -275,7 +279,8 @@ void ScreenRecoveryUI::progress_loop() {
         // update the installation animation, if active
         // skip this if we have a text overlay (too expensive to update)
         if ((currentIcon == INSTALLING_UPDATE || currentIcon == ERASING) &&
-            installing_frames > 0 && !show_text) {
+            //installing_frames > 0 && !show_text) {
+            installing_frames > 0) {
             installingFrame = (installingFrame + 1) % installing_frames;
             redraw = 1;
         }
@@ -335,9 +340,14 @@ void ScreenRecoveryUI::Init()
     text_cols = gr_fb_width() / CHAR_WIDTH;
     if (text_cols > kMaxCols - 1) text_cols = kMaxCols - 1;
 
-    LoadBitmap("icon_installing", &backgroundIcon[INSTALLING_UPDATE]);
+    //LoadBitmap("icon_installing", &backgroundIcon[INSTALLING_UPDATE]);
+    LoadBitmap("icon1_installing", &backgroundIcon[INSTALLING_UPDATE]);
+
     backgroundIcon[ERASING] = backgroundIcon[INSTALLING_UPDATE];
-    LoadBitmap("icon_error", &backgroundIcon[ERROR]);
+
+    //LoadBitmap("icon_error", &backgroundIcon[ERROR]);
+    LoadBitmap("icon1_error", &backgroundIcon[ERROR]);
+
     backgroundIcon[NO_COMMAND] = backgroundIcon[ERROR];
 
     LoadBitmap("progress_empty", &progressBarEmpty);
@@ -366,7 +376,9 @@ void ScreenRecoveryUI::Init()
             char filename[40];
             // "icon_installing_overlay01.png",
             // "icon_installing_overlay02.png", ...
-            sprintf(filename, "icon_installing_overlay%02d", i+1);
+            //sprintf(filename, "icon_installing_overlay%02d", i+1);
+            sprintf(filename, "icon1_installing_overlay%02d", i+1);
+
             LoadBitmap(filename, installationOverlay+i);
         }
     } else {
