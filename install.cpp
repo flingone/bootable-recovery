@@ -178,6 +178,9 @@ try_update_binary(const char *path, ZipArchive *zip, int* wipe_cache) {
 static int
 really_install_package(const char *path, int* wipe_cache)
 {
+    // let it display text?
+    //ui->ShowText(true);
+
     ui->SetBackground(RecoveryUI::INSTALLING_UPDATE);
     ui->Print("Finding update package...\n");
     // Give verification half the progress bar...
