@@ -1198,22 +1198,20 @@ main(int argc, char **argv) {
 
     if (update_package != NULL) {
         status = install_package(update_package, &wipe_cache, TEMPORARY_INSTALL_FILE);
-        if (status == INSTALL_SUCCESS && wipe_cache) {
-            if (erase_volume("/cache")) {
-                LOGE("Cache wipe (requested by package) failed.");
+        if (status == INSTALL_SUCCESS) {
+            if (wipe_cache) {
+                if (erase_volume("/cache")) {
+                    LOGE("Cache wipe (requested by package) failed.");
+                    ui->Print("Cache wipe (requested by package) failed.");
+                }
             }
+            FILE *fp = fopen("/cache/update.suc","w+");
+            fclose(fp);
         }
         if (status != INSTALL_SUCCESS) {
             ui->Print("Installation aborted.\n");
-
-            // If this is an eng or userdebug build, then automatically
-            // turn the text display on if the script fails so the error
-            // message is visible.
-            char buffer[PROPERTY_VALUE_MAX+1];
-            property_get("ro.build.fingerprint", buffer, "");
-            if (strstr(buffer, ":userdebug/") || strstr(buffer, ":eng/")) {
-                ui->ShowText(true);
-            }
+            FILE *fp = fopen("/cache/update.err","w+");
+            fclose(fp);
         }
     } else if (wipe_data) {
         // let it display text?
