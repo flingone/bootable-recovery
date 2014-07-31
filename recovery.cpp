@@ -1119,7 +1119,7 @@ main(int argc, char **argv) {
         if (status != INSTALL_SUCCESS) ui->Print("Installation aborted.\n");
     } else if (wipe_data) {
         // let it display text?
-        ui->ShowText(true);
+        //ui->ShowText(true);
 
         if (device->WipeData()) status = INSTALL_ERROR;
         if (erase_volume("/data")) status = INSTALL_ERROR;
