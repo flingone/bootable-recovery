@@ -1020,6 +1020,7 @@ main(int argc, char **argv) {
     printf("Starting recovery on %s", ctime(&start));
 
     load_volume_table();
+    ensure_path_unmounted("/mnt/sdcard");
     SetSdcardRootPath();
 
     get_args(&argc, &argv);
