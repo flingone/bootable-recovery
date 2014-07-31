@@ -1097,7 +1097,8 @@ main(int argc, char **argv) {
     printf("Starting recovery on %s", ctime(&start));
 
     load_volume_table();
-	SetSdcardRootPath();
+    ensure_path_unmounted("/mnt/internal_sd");
+    SetSdcardRootPath();
     ensure_path_mounted(LAST_LOG_FILE);
     rotate_last_logs(10);
     get_args(&argc, &argv);
