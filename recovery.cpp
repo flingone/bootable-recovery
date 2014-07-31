@@ -1111,12 +1111,21 @@ main(int argc, char **argv) {
 
     if (update_package != NULL) {
         status = install_package(update_package, &wipe_cache, TEMPORARY_INSTALL_FILE);
-        if (status == INSTALL_SUCCESS && wipe_cache) {
-            if (erase_volume("/cache")) {
-                LOGE("Cache wipe (requested by package) failed.");
+        if (status == INSTALL_SUCCESS) {
+            if (wipe_cache) {
+                if (erase_volume("/cache")) {
+                    LOGE("Cache wipe (requested by package) failed.");
+                    ui->Print("Cache wipe (requested by package) failed.");
+                }
             }
+            FILE *fp = fopen("/cache/update.suc","w+");
+            fclose(fp);
         }
-        if (status != INSTALL_SUCCESS) ui->Print("Installation aborted.\n");
+        if (status != INSTALL_SUCCESS) {
+            ui->Print("Installation aborted.\n");
+            FILE *fp = fopen("/cache/update.err","w+");
+            fclose(fp);
+        }
     } else if (wipe_data) {
         // let it display text?
         //ui->ShowText(true);
