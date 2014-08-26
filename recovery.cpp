@@ -49,6 +49,7 @@ extern "C" {
 struct selabel_handle *sehandle;
 
 static const struct option OPTIONS[] = {
+  { "factory_mode", required_argument, NULL, 'f' },
   { "send_intent", required_argument, NULL, 's' },
   { "update_package", required_argument, NULL, 'u' },
   { "wipe_data", no_argument, NULL, 'w' },
@@ -1028,6 +1029,7 @@ main(int argc, char **argv) {
     const char *update_package = NULL;
     int wipe_data = 0, wipe_cache = 0, show_text = 0, wipe_all = 0;
     bool just_exit = false;
+    int factory_mode_en = 0;
 
     int arg;
     while ((arg = getopt_long(argc, argv, "", OPTIONS, NULL)) != -1) {
@@ -1037,6 +1039,7 @@ main(int argc, char **argv) {
         case 'u': update_package = optarg; break;
         case 'w': wipe_data = wipe_cache = 1; break;
         case 'c': wipe_cache = 1; break;
+        case 'f': factory_mode_en = 1; break;
         case 't': show_text = 1; break;
         case 'w'+'a':{ wipe_all = wipe_data = wipe_cache = 1;show_text = 1;} break;
         case 'x': just_exit = true; break;
@@ -1135,6 +1138,13 @@ main(int argc, char **argv) {
     }
     if (status != INSTALL_SUCCESS) {
         prompt_and_wait(device, status);
+    }
+
+    //factory mode, goto sdtool
+    if(factory_mode_en) {
+        printf("find factory mode misc command!\n");
+        execv("sbin/sdtool", NULL);
+        fprintf(stdout, "E:Can't run test bin (%s)\n", strerror(errno));
     }
 
     // Otherwise, get ready to boot the main system...
