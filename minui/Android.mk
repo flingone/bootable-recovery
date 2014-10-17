@@ -13,6 +13,13 @@ LOCAL_MODULE := libminui
 # ordinary characters in this context).  Strip double-quotes from the
 # value so that either will work.
 
+ifeq ($(strip $(TARGET_BOARD_HARDWARE)),rk30board)
+LOCAL_CFLAGS += -DTARGET_RK30
+endif
+ifeq ($(strip $(TARGET_BOARD_HARDWARE)),rk29board)
+LOCAL_CFLAGS += -DTARGET_RK29
+endif
+
 ifeq ($(subst ",,$(TARGET_RECOVERY_PIXEL_FORMAT)),RGBX_8888)
   LOCAL_CFLAGS += -DRECOVERY_RGBX
 endif

@@ -52,12 +52,20 @@ LOCAL_STATIC_LIBRARIES := \
     libselinux \
     libstdc++ \
     libm \
-    libc
+    libc \
+    librk_emmcutils
 
 ifeq ($(TARGET_USERIMAGES_USE_EXT4), true)
     LOCAL_CFLAGS += -DUSE_EXT4
     LOCAL_C_INCLUDES += system/extras/ext4_utils
     LOCAL_STATIC_LIBRARIES += libext4_utils_static libz
+endif
+
+ifeq ($(strip $(TARGET_BOARD_HARDWARE)),rk30board)
+LOCAL_CFLAGS += -DTARGET_RK30
+endif
+ifeq ($(strip $(TARGET_BOARD_HARDWARE)),rk2928board)
+LOCAL_CFLAGS += -DTARGET_RK30
 endif
 
 # This binary is in the recovery ramdisk, which is otherwise a copy of root.
@@ -71,6 +79,11 @@ ifeq ($(TARGET_RECOVERY_UI_LIB),)
 else
   LOCAL_STATIC_LIBRARIES += $(TARGET_RECOVERY_UI_LIB)
 endif
+
+# TARGET_BOARD_PLATFORM is change from rockchip to rk29xx or rk30xx
+# so force TARGET_BOARD_PLATFORM to be rockchip in recovery cpp file
+LOCAL_CFLAGS += -DTARGET_BOARD_PLATFORM=rockchip
+LOCAL_CFLAGS += -fpermissive
 
 LOCAL_C_INCLUDES += system/extras/ext4_utils
 

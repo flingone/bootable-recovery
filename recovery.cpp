@@ -44,6 +44,8 @@
 #include "adb_install.h"
 extern "C" {
 #include "minadbd/adb.h"
+#include "mtdutils/rk29.h"
+#include "mtdutils/mtdutils.h"
 }
 
 struct selabel_handle *sehandle;
@@ -54,6 +56,7 @@ static const struct option OPTIONS[] = {
   { "wipe_data", no_argument, NULL, 'w' },
   { "wipe_cache", no_argument, NULL, 'c' },
   { "show_text", no_argument, NULL, 't' },
+  { "wipe_all", no_argument, NULL, 'w'+'a' },
   { "just_exit", no_argument, NULL, 'x' },
   { "locale", required_argument, NULL, 'l' },
   { NULL, 0, NULL, 0 },
@@ -72,10 +75,14 @@ static const char *SDCARD_ROOT = "/sdcard";
 static const char *TEMPORARY_LOG_FILE = "/tmp/recovery.log";
 static const char *TEMPORARY_INSTALL_FILE = "/tmp/last_install";
 static const char *SIDELOAD_TEMP_DIR = "/tmp/sideload";
+static char IN_SDCARD_ROOT[256] = "\0";
+static char EX_SDCARD_ROOT[256] = "\0";
 
 RecoveryUI* ui = NULL;
 char* locale = NULL;
 char recovery_version[PROPERTY_VALUE_MAX+1];
+
+char gVolume_label[128];
 
 /*
  * The recovery tool communicates with the main system through /cache files.
@@ -878,6 +885,16 @@ print_property(const char *key, const char *name, void *cookie) {
     printf("%s=%s\n", key, name);
 }
 
+void SetSdcardRootPath(void)
+{
+     property_get("InternalSD_ROOT", IN_SDCARD_ROOT, "");
+	   LOGI("InternalSD_ROOT: %s\n", IN_SDCARD_ROOT);
+	   property_get("ExternalSD_ROOT", EX_SDCARD_ROOT, "");
+	   LOGI("ExternalSD_ROOT: %s\n", EX_SDCARD_ROOT);
+
+	   return;
+}
+
 static void
 load_locale_from_cache() {
     FILE* fp = fopen_path(LOCALE_FILE, "r");
@@ -895,6 +912,15 @@ load_locale_from_cache() {
         locale = strdup(buffer);
         check_and_fclose(fp, LOCALE_FILE);
     }
+}
+
+void SureCacheMount() {
+	if(ensure_path_mounted("/cache")) {
+		printf("mount cache fail,so formate...\n");
+		tmplog_offset = 0;
+		format_volume("/cache");
+		ensure_path_mounted("/cache");
+	}
 }
 
 static RecoveryUI* gCurrentUI = NULL;
@@ -923,6 +949,14 @@ main(int argc, char **argv) {
     freopen(TEMPORARY_LOG_FILE, "a", stdout); setbuf(stdout, NULL);
     freopen(TEMPORARY_LOG_FILE, "a", stderr); setbuf(stderr, NULL);
 
+#ifdef TARGET_RK30
+    freopen("/dev/ttyFIQ0", "a", stdout); setbuf(stdout, NULL);
+    freopen("/dev/ttyFIQ0", "a", stderr); setbuf(stderr, NULL);
+#else
+    freopen("/dev/ttyS1", "a", stdout); setbuf(stdout, NULL);
+    freopen("/dev/ttyS1", "a", stderr); setbuf(stderr, NULL);
+#endif
+
     // If this binary is started with the single argument "--adbd",
     // instead of being the normal recovery binary, it turns into kind
     // of a stripped-down version of adbd that only supports the
@@ -938,6 +972,7 @@ main(int argc, char **argv) {
     printf("Starting recovery on %s", ctime(&start));
 
     load_volume_table();
+	SetSdcardRootPath();
     ensure_path_mounted(LAST_LOG_FILE);
     rotate_last_logs(10);
     get_args(&argc, &argv);
@@ -945,7 +980,7 @@ main(int argc, char **argv) {
     int previous_runs = 0;
     const char *send_intent = NULL;
     const char *update_package = NULL;
-    int wipe_data = 0, wipe_cache = 0, show_text = 0;
+    int wipe_data = 0, wipe_cache = 0, show_text = 0, wipe_all = 0;
     bool just_exit = false;
 
     int arg;
@@ -957,6 +992,7 @@ main(int argc, char **argv) {
         case 'w': wipe_data = wipe_cache = 1; break;
         case 'c': wipe_cache = 1; break;
         case 't': show_text = 1; break;
+        case 'w'+'a':{ wipe_all = wipe_data = wipe_cache = 1;show_text = 1;} break;
         case 'x': just_exit = true; break;
         case 'l': locale = optarg; break;
         case '?':
@@ -976,7 +1012,9 @@ main(int argc, char **argv) {
 
     ui->Init();
     ui->SetLocale(locale);
-    ui->SetBackground(RecoveryUI::NONE);
+    //ui->SetBackground(RecoveryUI::NONE);
+	ui->Print("Recovery system v4.4.0 \n\n");
+	printf("Recovery system v4.4.0 \n");
     if (show_text) ui->ShowText(true);
 
     struct selinux_opt seopts[] = {
@@ -990,6 +1028,12 @@ main(int argc, char **argv) {
     }
 
     device->StartRecovery();
+    SureCacheMount();
+
+    char bootmode[256];
+    property_get("ro.bootmode", bootmode, "unknown");
+    printf("bootmode = %s \n", bootmode);
+    property_get("UserVolumeLabel", gVolume_label, "");
 
     printf("Command:");
     for (arg = 0; arg < argc; arg++) {
@@ -1042,6 +1086,7 @@ main(int argc, char **argv) {
         if (device->WipeData()) status = INSTALL_ERROR;
         if (erase_volume("/data")) status = INSTALL_ERROR;
         if (wipe_cache && erase_volume("/cache")) status = INSTALL_ERROR;
+        if (wipe_all && erase_volume(IN_SDCARD_ROOT)) status = INSTALL_ERROR;
         if (status != INSTALL_SUCCESS) ui->Print("Data wipe failed.\n");
     } else if (wipe_cache) {
         if (wipe_cache && erase_volume("/cache")) status = INSTALL_ERROR;
@@ -1055,13 +1100,14 @@ main(int argc, char **argv) {
         copy_logs();
         ui->SetBackground(RecoveryUI::ERROR);
     }
-    if (status != INSTALL_SUCCESS || ui->IsTextVisible()) {
+    if (status != INSTALL_SUCCESS) {
         prompt_and_wait(device, status);
     }
 
     // Otherwise, get ready to boot the main system...
     finish_recovery(send_intent);
     ui->Print("Rebooting...\n");
-    property_set(ANDROID_RB_PROPERTY, "reboot,");
+    //property_set(ANDROID_RB_PROPERTY, "reboot,");
+	android_reboot(ANDROID_RB_RESTART, 0, 0);
     return EXIT_SUCCESS;
 }

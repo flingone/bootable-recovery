@@ -27,18 +27,29 @@
 #include "mtdutils/mounts.h"
 #include "roots.h"
 #include "common.h"
-#include "make_ext4fs.h"
+#include "mtdutils/rk29.h"
+#include "cutils/properties.h"
+extern "C" {
+#include "emmcutils/rk_emmcutils.h"
+}
 
 static struct fstab *fstab = NULL;
 
 extern struct selabel_handle *sehandle;
+extern char gVolume_label[128];
 
 void load_volume_table()
 {
     int i;
     int ret;
 
+	int emmcState = getEmmcState();
+    if(emmcState) {
+		fstab = fs_mgr_read_fstab("/etc/recovery.emmc.fstab");
+	}else {
     fstab = fs_mgr_read_fstab("/etc/recovery.fstab");
+	}
+	
     if (!fstab) {
         LOGE("failed to read /etc/recovery.fstab\n");
         return;
@@ -105,8 +116,45 @@ int ensure_path_mounted(const char* path) {
         }
         return mtd_mount_partition(partition, v->mount_point, v->fs_type, 0);
     } else if (strcmp(v->fs_type, "ext4") == 0 ||
-               strcmp(v->fs_type, "vfat") == 0) {
+               strcmp(v->fs_type, "ext3") == 0) {
         result = mount(v->blk_device, v->mount_point, v->fs_type,
+                       MS_NOATIME | MS_NODEV | MS_NODIRATIME, "");
+        if (result == 0) return 0;
+
+        LOGE("failed to mount %s (%s)\n", v->mount_point, strerror(errno));
+        return -1;
+    } else if (strcmp(v->fs_type, "vfat") == 0) {
+        result = mount(v->blk_device, v->mount_point, v->fs_type,
+                       MS_NOATIME | MS_NODEV | MS_NODIRATIME, "shortname=mixed,utf8");
+        if (result == 0) return 0;
+
+        LOGW("trying mount %s to ntfs\n", v->blk_device);
+		result = mount(v->blk_device, v->mount_point, "ntfs",
+						   MS_NOATIME | MS_NODEV | MS_NODIRATIME, "");
+		if (result == 0) return 0;
+			
+		char *sec_dev = v->fs_options;
+		if(sec_dev != NULL) {
+			char *temp = strchr(sec_dev, ',');
+			if(temp) {
+				temp[0] = '\0';
+			}
+
+			result = mount(sec_dev, v->mount_point, v->fs_type,
+								   MS_NOATIME | MS_NODEV | MS_NODIRATIME, "shortname=mixed,utf8");
+			if (result == 0) return 0;
+
+			LOGW("trying mount %s to ntfs\n", sec_dev);
+			result = mount(sec_dev, v->mount_point, "ntfs",
+							   MS_NOATIME | MS_NODEV | MS_NODIRATIME, "");
+			if (result == 0) return 0;
+		}
+
+        LOGE("failed to mount %s (%s)\n", v->mount_point, strerror(errno));
+        return -1;
+    }else if (strcmp(v->fs_type, "ntfs") == 0) {
+		LOGW("trying mount %s to ntfs\n", v->blk_device);
+		result = mount(v->blk_device, v->mount_point, "ntfs",
                        MS_NOATIME | MS_NODEV | MS_NODIRATIME, "");
         if (result == 0) return 0;
 
@@ -191,7 +239,7 @@ int format_volume(const char* volume) {
     }
 
     if (strcmp(v->fs_type, "ext4") == 0) {
-        int result = make_ext4fs(v->blk_device, v->length, volume, sehandle);
+        int result = rk_make_ext4fs(v->blk_device, v->length, volume);
         if (result != 0) {
             LOGE("format_volume: make_extf4fs failed on %s\n", v->blk_device);
             return -1;
@@ -199,6 +247,39 @@ int format_volume(const char* volume) {
         return 0;
     }
 
+#if TARGET_BOARD_PLATFORM == rockchip
+    if (strcmp(v->fs_type, "ext3") == 0) {
+        int result = rk_make_ext3fs(v->blk_device);
+        if (result != 0) {
+            LOGE("format_volume: make_extf3fs failed on %s\n", v->blk_device);
+            return -1;
+          }
+        return 0;
+     }
+#endif
+    if (strcmp(v->fs_type, "vfat") == 0) {
+        LOGI("VolumeLabel: %s\n", gVolume_label);
+        int result = make_vfat(v->blk_device,gVolume_label);
+        if (result != 0) { 
+            LOGE("format_volume: make_vfat failed on %s\n", v->blk_device);
+            return -1;
+         }
+        return 0;
+    }
+    
+    if (strcmp(v->fs_type, "ntfs") == 0) {
+    	ensure_path_mounted("/system");
+		LOGI("VolumeLabel: %s\n", gVolume_label);
+		int result = make_ntfs(v->blk_device,gVolume_label);
+		if (result != 0) {
+			LOGE("format_volume: make_ntfs failed on %s\n", v->blk_device);
+			ensure_path_unmounted("/system");
+			return -1;
+		 }
+
+		ensure_path_unmounted("/system");
+		return 0;
+    }
     LOGE("format_volume: fs_type \"%s\" unsupported\n", v->fs_type);
     return -1;
 }
