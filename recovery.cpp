@@ -28,6 +28,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "bootloader.h"
@@ -42,6 +43,7 @@
 #include "screen_ui.h"
 #include "device.h"
 #include "adb_install.h"
+#include "sdtool.h"
 extern "C" {
 #include "minadbd/adb.h"
 #include "mtdutils/rk29.h"
@@ -51,6 +53,7 @@ extern "C" {
 struct selabel_handle *sehandle;
 
 static const struct option OPTIONS[] = {
+  { "factory_mode", required_argument, NULL, 'f' },
   { "send_intent", required_argument, NULL, 's' },
   { "update_package", required_argument, NULL, 'u' },
   { "wipe_data", no_argument, NULL, 'w' },
@@ -78,11 +81,34 @@ static const char *SIDELOAD_TEMP_DIR = "/tmp/sideload";
 static char IN_SDCARD_ROOT[256] = "\0";
 static char EX_SDCARD_ROOT[256] = "\0";
 
+#if TARGET_BOARD_PLATFORM == rockchip
+bool bNeedClearMisc=true;
+#endif
+
 RecoveryUI* ui = NULL;
 char* locale = NULL;
 char recovery_version[PROPERTY_VALUE_MAX+1];
 
+//for sdtool, factory tools
+bool bIfUpdateLoader = false;
 char gVolume_label[128];
+enum ConfigId {
+	pcba_test = 0,
+	fw_update,
+	display_lcd,
+	display_led,
+	demo_copy,
+	volume_label
+};
+
+static RKSdBootCfgItem SdBootConfigs[] = {
+		{"pcba_test", "1"},
+		{"fw_update", "0"},
+		{"display_lcd", "1"},
+		{"display_led", "1"},
+		{"demo_copy", "0"},
+		{"volume_label", "rockchip"},
+};
 
 /*
  * The recovery tool communicates with the main system through /cache files.
@@ -336,10 +362,19 @@ finish_recovery(const char *send_intent) {
 
     copy_logs();
 
+#if TARGET_BOARD_PLATFORM == rockchip
     // Reset to normal system boot so recovery won't cycle indefinitely.
+    if( bNeedClearMisc )
+    {
+       struct bootloader_message boot;
+       memset(&boot, 0, sizeof(boot));
+       set_bootloader_message(&boot);
+    }
+#else
     struct bootloader_message boot;
     memset(&boot, 0, sizeof(boot));
     set_bootloader_message(&boot);
+#endif
 
     // Remove the command file, so recovery won't repeat indefinitely.
     if (ensure_path_mounted(COMMAND_FILE) != 0 ||
@@ -950,6 +985,77 @@ ui_print(const char* format, ...) {
         fputs(buffer, stdout);
     }
 }
+int sdtool_main(char *factory_mode, Device* device) {
+	ensure_path_mounted(IN_SDCARD_ROOT);
+//	parseSDBootConfig();
+	int status = INSTALL_SUCCESS;
+	bool pcbaTestPass = true;
+
+	if(!strcmp(SdBootConfigs[pcba_test].value, "1")) {
+		//pcba test
+		printf("enter pcba test!\n");
+
+		char *args[2];
+		args[0] = "/sbin/pcba_core";
+		args[1] = NULL;
+
+		pid_t child = fork();
+		if (child == 0) {
+			execv(args[0], args);
+			fprintf(stderr, "run_program: execv failed: %s\n", strerror(errno));
+			status = INSTALL_ERROR;
+			pcbaTestPass = false;
+		}
+		int child_status;
+		waitpid(child, &child_status, 0);
+		if (WIFEXITED(child_status)) {
+			if (WEXITSTATUS(child_status) != 0) {
+				printf("pcba test error coder is %d \n", WEXITSTATUS(child_status));
+				status = INSTALL_ERROR;
+				pcbaTestPass = false;
+			}
+		} else if (WIFSIGNALED(child_status)) {
+			printf("run_program: child terminated by signal %d\n", WTERMSIG(child_status));
+			status = INSTALL_ERROR;
+			pcbaTestPass = false;
+		}
+	}
+
+	ui->Print("sdcard boot tools system v1.34 \n\n");
+	//ui_set_background(BACKGROUND_ICON_INSTALLING);
+
+	if(!pcbaTestPass) {
+		ui->Print("pcba test error!!!");
+		goto finish;
+	}
+
+	//format user partition
+	erase_volume(IN_SDCARD_ROOT);
+	//format userdata
+	erase_volume("/data");
+
+finish:
+	if (status != INSTALL_SUCCESS) ui->SetBackground(RecoveryUI::ERROR);
+	if (status != INSTALL_SUCCESS) {
+		bNeedClearMisc = false;
+		ui->ShowText(true);
+		prompt_and_wait(device, status);
+	}else {
+		if((factory_mode != NULL && !strcmp(factory_mode, "small")) || bIfUpdateLoader == true) {
+			printf("small fw ,or bIfUpdateLoader = %d\n", bIfUpdateLoader);
+			bNeedClearMisc = false;
+		}
+	}
+
+	// Otherwise, get ready to boot the main system...
+	finish_recovery(NULL);
+	ui->ShowText(true);
+	ui->Print("All complete successful!please remove the sdcard......\n");
+	//checkSDRemoved();
+	ui->Print("rebooting...\n");
+	android_reboot(ANDROID_RB_RESTART, 0, 0);
+	return EXIT_SUCCESS;
+}
 
 int
 main(int argc, char **argv) {
@@ -992,7 +1098,8 @@ main(int argc, char **argv) {
     const char *update_package = NULL;
     int wipe_data = 0, wipe_cache = 0, show_text = 0, wipe_all = 0;
     bool just_exit = false;
-
+    int factory_mode_en = 0;
+    char *factory_mode = NULL;
     int arg;
     while ((arg = getopt_long(argc, argv, "", OPTIONS, NULL)) != -1) {
         switch (arg) {
@@ -1001,6 +1108,7 @@ main(int argc, char **argv) {
         case 'u': update_package = optarg; break;
         case 'w': wipe_data = wipe_cache = 1; break;
         case 'c': wipe_cache = 1; break;
+        case 'f': factory_mode = optarg;factory_mode_en = 1; break;
         case 't': show_text = 1; break;
         case 'w'+'a':{ wipe_all = wipe_data = wipe_cache = 1;show_text = 1;} break;
         case 'x': just_exit = true; break;
@@ -1040,6 +1148,11 @@ main(int argc, char **argv) {
     device->StartRecovery();
     SureCacheMount();
     SureMetadataMount();
+    //get misc commond factory mode, goto sdtool
+    if(factory_mode_en) {
+	    printf("find factory mode misc command!\n");
+	    return sdtool_main(factory_mode, device);
+    }
 
     char bootmode[256];
     property_get("ro.bootmode", bootmode, "unknown");
