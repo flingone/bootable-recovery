@@ -43,11 +43,15 @@
 #include "mtdutils/mtdutils.h"
 #include "updater.h"
 #include "applypatch/applypatch.h"
+#include "mtdutils/rk29.h"
+#include "emmcutils/rk_emmcutils.h"
 
+static int set_bootloader_message(const struct bootloader_message *in);
+static int set_bootloader_message_block_rk29(const struct bootloader_message *in, const char* blk_device);
+static int set_bootloader_message_mtd(const struct bootloader_message *in, const char* blk_device);
 #ifdef USE_EXT4
 #include "make_ext4fs.h"
 #endif
-
 // mount(fs_type, partition_type, location, mount_point)
 //
 //    fs_type="yaffs2" partition_type="MTD"     location=partition
@@ -1113,6 +1117,103 @@ done:
     return StringValue(result);
 }
 
+Value* ClearMiscCommandFn(const char* name, State* state, int argc, Expr* argv[]) {
+	printf("clear misc command!\n");
+	struct bootloader_message boot;
+	memset(&boot, 0, sizeof(boot));
+	set_bootloader_message(&boot);
+
+	return StringValue(strdup(""));
+}
+
+static int set_bootloader_message(const struct bootloader_message *in) {
+	if(getEmmcState()) {
+		return set_bootloader_message_block_rk29(in, "/dev/block/platform/emmc/by-name/misc");
+	}else {
+		return set_bootloader_message_mtd(in, "misc");
+	}
+
+    printf("unknown misc partition fs_type\n");
+    return -1;
+}
+
+static const int MISC_PAGES = 3;         // number of pages to save
+static const int MISC_COMMAND_PAGE = 1;  // bootloader command is this page
+
+static int set_bootloader_message_mtd(const struct bootloader_message *in,
+                                      const char* blk_device) {
+    size_t write_size;
+    mtd_scan_partitions();
+    const MtdPartition *part = mtd_find_partition_by_name(blk_device);
+    if (part == NULL || mtd_partition_info(part, NULL, NULL, &write_size)) {
+        printf("Can't find %s\n", blk_device);
+        return -1;
+    }
+
+    MtdReadContext *read = mtd_read_partition(part);
+    if (read == NULL) {
+        printf("Can't open %s\n(%s)\n", blk_device, strerror(errno));
+        return -1;
+    }
+
+    ssize_t size = write_size * MISC_PAGES;
+    char data[size];
+    ssize_t r = mtd_read_data(read, data, size);
+    if (r != size) printf("Can't read %s\n(%s)\n", blk_device, strerror(errno));
+    mtd_read_close(read);
+    if (r != size) return -1;
+
+    memcpy(&data[write_size * MISC_COMMAND_PAGE], in, sizeof(*in));
+
+    MtdWriteContext *write = mtd_write_partition(part);
+    if (write == NULL) {
+        printf("Can't open %s\n(%s)\n", blk_device, strerror(errno));
+        return -1;
+    }
+    if (mtd_write_data(write, data, size) != size) {
+        printf("Can't write %s\n(%s)\n", blk_device, strerror(errno));
+        mtd_write_close(write);
+        return -1;
+    }
+    if (mtd_write_close(write)) {
+        printf("Can't finish %s\n(%s)\n", blk_device, strerror(errno));
+        return -1;
+    }
+
+    printf("Set boot command \"%s\"\n", in->command[0] != 255 ? in->command : "");
+    return 0;
+}
+
+static int set_bootloader_message_block_rk29(const struct bootloader_message *in,
+												const char* blk_device) {
+
+    FILE* f = fopen(blk_device, "wb+");
+
+    if (f == NULL) {
+        printf("Can't open %s\n(%s)\n", blk_device, strerror(errno));
+        return -1;
+    }
+
+    const ssize_t size =WRITE_SIZE * MISC_PAGES;
+    char data[size];
+
+    memset(data,0,size);
+    memcpy(&data[WRITE_SIZE * MISC_COMMAND_PAGE], in, sizeof(*in));
+
+    int count = rk29_fwrite(data, size, 1, f);
+
+    if (count != 1) {
+        printf("Failed writing %s\n(%s)\n", blk_device, strerror(errno));
+        fclose(f);
+        return -1;
+    }
+    if (fclose(f) != 0) {
+        printf("Failed closing %s\n(%s)\n", blk_device, strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
 // apply_patch_space(bytes)
 Value* ApplyPatchSpaceFn(const char* name, State* state,
                          int argc, Expr* argv[]) {
@@ -1452,6 +1553,7 @@ void RegisterInstallFunctions() {
     RegisterFunction("getprop", GetPropFn);
     RegisterFunction("file_getprop", FileGetPropFn);
     RegisterFunction("write_raw_image", WriteRawImageFn);
+    RegisterFunction("clear_misc_command", ClearMiscCommandFn);
 
     RegisterFunction("apply_patch", ApplyPatchFn);
     RegisterFunction("apply_patch_check", ApplyPatchCheckFn);
