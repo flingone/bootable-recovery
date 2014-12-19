@@ -1147,7 +1147,7 @@ main(int argc, char **argv) {
 
     device->StartRecovery();
     SureCacheMount();
-    SureMetadataMount();
+    //SureMetadataMount();
     //get misc commond factory mode, goto sdtool
     if(factory_mode_en) {
 	    printf("find factory mode misc command!\n");
