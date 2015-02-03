@@ -16,6 +16,7 @@
 
 #include <ctype.h>
 #include <dirent.h>
+#include <fs_mgr.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -1210,6 +1211,14 @@ main(int argc, char **argv) {
         if (device->WipeData()) status = INSTALL_ERROR;
         if (erase_volume("/data")) status = INSTALL_ERROR;
         if (wipe_cache && erase_volume("/cache")) status = INSTALL_ERROR;
+        if(wipe_all) {
+		printf("resize /system \n");
+		Volume* v = volume_for_path("/system");
+		if(rk_check_and_resizefs(v->blk_device)) {
+			ui->Print("check and resize /system failed!\n");
+			status = INSTALL_ERROR;
+		}
+        }
         if (wipe_all && erase_volume(IN_SDCARD_ROOT)) status = INSTALL_ERROR;
         if (status != INSTALL_SUCCESS) ui->Print("Data wipe failed.\n");
     } else if (wipe_cache) {
