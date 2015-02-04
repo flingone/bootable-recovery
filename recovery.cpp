@@ -991,6 +991,7 @@ int sdtool_main(char *factory_mode, Device* device) {
 //	parseSDBootConfig();
 	int status = INSTALL_SUCCESS;
 	bool pcbaTestPass = true;
+	Volume* v;
 
 	if(!strcmp(SdBootConfigs[pcba_test].value, "1")) {
 		//pcba test
@@ -1028,6 +1029,13 @@ int sdtool_main(char *factory_mode, Device* device) {
 	if(!pcbaTestPass) {
 		ui->Print("pcba test error!!!");
 		goto finish;
+	}
+
+	printf("resize /system \n");
+	v = volume_for_path("/system");
+	if(rk_check_and_resizefs(v->blk_device)) {
+		ui->Print("check and resize /system failed!\n");
+		status = INSTALL_ERROR;
 	}
 
 	//format user partition
